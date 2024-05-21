@@ -1,0 +1,11 @@
+{
+    "files.associations": {
+        "filters.h": "c",
+        "util.h": "c",
+        "base.h": "c",
+        "stdio.h": "c",
+        "cmath": "c",
+        "math.h": "c",
+        "limits": "c"
+    }
+}

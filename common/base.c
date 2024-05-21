@@ -384,7 +384,8 @@ REALIGN_STACK void x264_param_default( x264_param_t *param )
     param->i_frame_reference = 3;
     param->i_keyint_max = 250;
     param->i_keyint_min = X264_KEYINT_MIN_AUTO;
-    param->i_bframe = 3;
+    // param->i_bframe = 3;
+    param->i_bframe = 0;
     param->i_scenecut_threshold = 40;
     param->i_bframe_adaptive = X264_B_ADAPT_FAST;
     param->i_bframe_bias = 0;
@@ -455,7 +456,8 @@ REALIGN_STACK void x264_param_default( x264_param_t *param )
     param->analyse.i_trellis = 1;
     param->analyse.i_luma_deadzone[0] = 21;
     param->analyse.i_luma_deadzone[1] = 11;
-    param->analyse.b_psnr = 0;
+    // param->analyse.b_psnr = 0;
+    param->analyse.b_psnr = 1;
     param->analyse.b_ssim = 0;
 
     param->i_cqm_preset = X264_CQM_FLAT;

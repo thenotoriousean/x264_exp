@@ -44,6 +44,16 @@
 #include "output/output.h"
 #include "filters/filters.h"
 
+#include <sys/time.h>
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <sys/time.h>
+#include <pthread.h>
+#include <unistd.h>
+#include <stdlib.h>
+#include <stdbool.h>
+
 #define QP_MAX_SPEC (51+6*2)
 #define QP_MAX (QP_MAX_SPEC+18)
 
@@ -114,6 +124,13 @@ static int get_argv_utf8( int *argc_ptr, char ***argv_ptr )
     return ret;
 }
 #endif
+
+static long get_tick_count(){
+  struct timeval tim;
+  gettimeofday(&tim, NULL);
+  long t = ((tim.tv_sec * 1000) + (tim.tv_usec / 1000)) & 0xffffffff;
+  return t;
+}
 
 /* Ctrl-C handler */
 static volatile int b_ctrl_c = 0;
@@ -1956,6 +1973,8 @@ static int encode( x264_param_t *param, cli_opt_t *opt )
 
     h = x264_encoder_open( param );
     FAIL_IF_ERROR2( !h, "x264_encoder_open failed\n" );
+    
+    long x264_start_time = get_tick_count();
 
     x264_encoder_parameters( h, param );
 
@@ -2078,8 +2097,12 @@ fail:
     /* Erase progress indicator before printing encoding stats. */
     if( opt->b_progress )
         fprintf( stderr, "                                                                               \r" );
-    if( h )
+    long x264_end_time = 0;
+    if( h ){
+        x264_end_time = get_tick_count();
+
         x264_encoder_close( h );
+    }
     fprintf( stderr, "\n" );
 
     if( b_ctrl_c )
@@ -2095,6 +2118,7 @@ fail:
 
         fprintf( stderr, "encoded %d frames, %.2f fps, %.2f kb/s\n", i_frame_output, fps,
                  (double) i_file * 8 / ( 1000 * duration ) );
+        fprintf( stderr, "total encoding time: %ld\n", x264_end_time-x264_start_time );
     }
 
     return retval;

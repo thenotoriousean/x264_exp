@@ -92,6 +92,15 @@ if( (y) < (x) )\
     (c) = (d);\
 }
 
+#define COPY3_IF_LT_QS(x,y,a,b,c,d,f)\
+if( (y) < (x) )\
+{\
+    (x) = (y);\
+    (a) = (b);\
+    (c) = (d);\
+    (f) = (1);\
+}
+
 #define COPY4_IF_LT(x,y,a,b,c,d,e,f)\
 if( (y) < (x) )\
 {\

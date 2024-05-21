@@ -664,9 +664,50 @@ static void mb_analyse_intra_chroma( x264_t *h, x264_mb_analysis_t *a )
     h->mb.i_chroma_pred_mode = a->i_predict8x8chroma;
 }
 
+static void calculate_mb_mad_frequency(pixel *p_src, float mad[], int main_clr_16x16){
+    pixel* mb_4x4;
+    float sum_4x4=0, avg_4x4=0, sum_8x8=0;
+    int tmp0, tmp1, tmp2, tmp3;
+    int frequency_16x16[256]={0};
+    for(int i = 0; i < 16; i++ ){
+        mb_4x4 = p_src + block_idx_xy_fenc[i];
+        sum_4x4 = mb_4x4[0]+ mb_4x4[1]+ mb_4x4[2]+ mb_4x4[3]
+                 +mb_4x4[16]+mb_4x4[17]+mb_4x4[18]+mb_4x4[19]
+                 +mb_4x4[32]+mb_4x4[33]+mb_4x4[34]+mb_4x4[35]
+                 +mb_4x4[48]+mb_4x4[49]+mb_4x4[50]+mb_4x4[51];
+        avg_4x4 = sum_4x4 / 16;
+
+        for(int j=0; j<4; j++){
+            tmp0 = mb_4x4[j*FENC_STRIDE + 0];
+            tmp1 = mb_4x4[j*FENC_STRIDE + 1];
+            tmp2 = mb_4x4[j*FENC_STRIDE + 2];
+            tmp3 = mb_4x4[j*FENC_STRIDE + 3];
+
+            sum_4x4 = abs(tmp0-avg_4x4)+ abs(tmp1-avg_4x4)+ 
+                      abs(tmp2-avg_4x4)+ abs(tmp3-avg_4x4);
+
+            frequency_16x16[tmp0]++;
+            frequency_16x16[tmp1]++;
+            frequency_16x16[tmp2]++;
+            frequency_16x16[tmp3]++;
+        }
+        
+        mad[i] = sum_4x4 / 16;
+        sum_8x8 += mad[i];
+
+        if((i+1)%4 == 0){
+            mad[(i+1)/4 + 16] = sum_8x8 / 4;
+            sum_8x8 = 0;
+        }
+    }
+    mad[16] = (mad[17]+mad[18]+mad[19]+mad[20]) / 4;
+    main_clr_16x16 = (frequency_16x16[tmp0]>240 || frequency_16x16[tmp1]>240 || frequency_16x16[tmp2]>240 || frequency_16x16[tmp3]>240)?1:0;
+}
+
 /* FIXME: should we do any sort of merged chroma analysis with 4:4:4? */
 static void mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_inter )
 {
+    //long start_time = MyGetTickCount(); 
     const unsigned int flags = h->sh.i_type == SLICE_TYPE_I ? h->param.analyse.intra : h->param.analyse.inter;
     pixel *p_src = h->mb.pic.p_fenc[0];
     pixel *p_dst = h->mb.pic.p_fdec[0];
@@ -684,6 +725,16 @@ static void mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_inter
 
     int idx;
     int lambda = a->i_lambda;
+    uint16_t *cost_i4x4_mode = h->cost_table->i4x4_mode[a->i_qp] + 8;
+    float mad[21];
+    int main_clr_16x16 = 0;
+    calculate_mb_mad_frequency(p_src, mad, main_clr_16x16);
+
+    if(mad[16] >= 9.5){
+        a->i_satd_i16x16 = COST_MAX;
+        a->i_satd_i8x8 = COST_MAX;
+        goto intra_4x4;
+    }
 
     /*---------------- Try all mode and calculate their score ---------------*/
     /* Disabled i16x16 for AVC-Intra compat */
@@ -697,14 +748,12 @@ static void mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_inter
 
         if( !h->mb.b_lossless && predict_mode[3] >= 0 )
         {
-            h->pixf.intra_mbcmp_x3_16x16( p_src, p_dst, a->i_satd_i16x16_dir );
-            a->i_satd_i16x16_dir[0] += lambda * bs_size_ue(0);
-            a->i_satd_i16x16_dir[1] += lambda * bs_size_ue(1);
-            a->i_satd_i16x16_dir[2] += lambda * bs_size_ue(2);
-            COPY2_IF_LT( a->i_satd_i16x16, a->i_satd_i16x16_dir[0], a->i_predict16x16, 0 );
-            COPY2_IF_LT( a->i_satd_i16x16, a->i_satd_i16x16_dir[1], a->i_predict16x16, 1 );
-            COPY2_IF_LT( a->i_satd_i16x16, a->i_satd_i16x16_dir[2], a->i_predict16x16, 2 );
-
+            for(int i_mode=0; i_mode<2; i_mode++){
+                h->predict_16x16[i_mode]( p_dst );
+                a->i_satd_i16x16_dir[i_mode] = h->pixf.mbcmp[PIXEL_16x16]( p_src, FENC_STRIDE, p_dst, FDEC_STRIDE );
+                a->i_satd_i16x16_dir[i_mode] += lambda * bs_size_ue(i_mode);
+                COPY2_IF_LT( a->i_satd_i16x16, a->i_satd_i16x16_dir[i_mode], a->i_predict16x16, i_mode );
+            }
             /* Plane is expensive, so don't check it unless one of the previous modes was useful. */
             if( a->i_satd_i16x16 <= i16x16_thresh )
             {
@@ -737,11 +786,10 @@ static void mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_inter
             /* cavlc mb type prefix */
             a->i_satd_i16x16 += lambda * i_mb_b_cost_table[I_16x16];
 
-        if( a->i_satd_i16x16 > i16x16_thresh )
+        if( a->i_satd_i16x16 > i16x16_thresh || mad[16] <= 0.1 || main_clr_16x16)
             return;
     }
 
-    uint16_t *cost_i4x4_mode = h->cost_table->i4x4_mode[a->i_qp] + 8;
     /* 8x8 prediction selection */
     if( flags & X264_ANALYSE_I8x8 )
     {
@@ -770,14 +818,30 @@ static void mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_inter
 
             if( h->pixf.intra_mbcmp_x9_8x8 && predict_mode[8] >= 0 )
             {
-                /* No shortcuts here. The SSSE3 implementation of intra_mbcmp_x9 is fast enough. */
-                i_best = h->pixf.intra_mbcmp_x9_8x8( p_src_by, p_dst_by, edge, cost_i4x4_mode-i_pred_mode, a->i_satd_i8x8_dir[idx] );
-                i_cost += i_best & 0xffff;
-                i_best >>= 16;
-                a->i_predict8x8[idx] = i_best;
+
+                if(mad[idx+17] <= 0.1 ){
+                    ALIGNED_ARRAY_16( int32_t, satd,[4] );
+                    h->pixf.intra_mbcmp_x3_8x8( p_src_by, edge, satd);
+                    for( int i = 2; i >= 0; i-- )
+                    {
+                        int cost = satd[i];
+                        a->i_satd_i8x8_dir[idx][i] = cost + 4 * lambda;
+                        COPY2_IF_LT( i_best, cost, a->i_predict8x8[idx], i );
+                    }
+                    i_cost += i_best + 3*lambda;
+                }
+                else{
+                    i_best = h->pixf.intra_mbcmp_x9_8x8( p_src_by, p_dst_by, edge, cost_i4x4_mode-i_pred_mode, a->i_satd_i8x8_dir[idx] );
+                    i_cost += i_best & 0xffff;
+                    i_best >>= 16;
+                    a->i_predict8x8[idx] = i_best;
+                }
+             
                 if( idx == 3 || i_cost > i_satd_thresh )
                     break;
-                x264_macroblock_cache_intra8x8_pred( h, 2*x, 2*y, i_best );
+                h->predict_8x8[a->i_predict8x8[idx]]( p_dst_by, edge );
+                x264_macroblock_cache_intra8x8_pred( h, 2*x, 2*y, a->i_predict8x8[idx] );
+                    
             }
             else
             {
@@ -857,10 +921,11 @@ static void mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_inter
         }
         /* Not heavily tuned */
         static const uint8_t i8x8_thresh[11] = { 4, 4, 4, 5, 5, 5, 6, 6, 6, 6, 6 };
-        if( a->b_early_terminate && X264_MIN(i_cost, a->i_satd_i16x16) > (i_satd_inter*i8x8_thresh[h->mb.i_subpel_refine])>>2 )
+        if( (a->b_early_terminate && X264_MIN(i_cost, a->i_satd_i16x16) > (i_satd_inter*i8x8_thresh[h->mb.i_subpel_refine])>>2) || main_clr_16x16)
             return;
     }
 
+intra_4x4:
     /* 4x4 prediction selection */
     if( flags & X264_ANALYSE_I4x4 )
     {
@@ -889,14 +954,29 @@ static void mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_inter
 
             if( h->pixf.intra_mbcmp_x9_4x4 && predict_mode[8] >= 0 )
             {
-                /* No shortcuts here. The SSSE3 implementation of intra_mbcmp_x9 is fast enough. */
-                i_best = h->pixf.intra_mbcmp_x9_4x4( p_src_by, p_dst_by, cost_i4x4_mode-i_pred_mode );
-                i_cost += i_best & 0xffff;
-                i_best >>= 16;
-                a->i_predict4x4[idx] = i_best;
+                if(mad[idx] <= 3){
+                    ALIGNED_ARRAY_16( int32_t, satd,[4] );
+                    h->pixf.intra_mbcmp_x3_4x4( p_src_by, p_dst_by, satd );
+                    if( i_pred_mode < 3 )
+                        satd[i_pred_mode] -= 3 * lambda;
+                    i_best = satd[I_PRED_4x4_DC]; a->i_predict4x4[idx] = I_PRED_4x4_DC;
+                    COPY2_IF_LT( i_best, satd[I_PRED_4x4_H], a->i_predict4x4[idx], I_PRED_4x4_H );
+                    COPY2_IF_LT( i_best, satd[I_PRED_4x4_V], a->i_predict4x4[idx], I_PRED_4x4_V );
+
+                    i_cost += i_best + 3 * lambda;
+                    h->predict_4x4[a->i_predict4x4[idx]]( p_dst_by );
+                    h->mb.cache.intra4x4_pred_mode[x264_scan8[idx]] = a->i_predict4x4[idx];
+                }
+                else{
+                    /* No shortcuts here. The SSSE3 implementation of intra_mbcmp_x9 is fast enough. */
+                    i_best = h->pixf.intra_mbcmp_x9_4x4( p_src_by, p_dst_by, cost_i4x4_mode-i_pred_mode );
+                    i_cost += i_best & 0xffff;
+                    i_best >>= 16;
+                    a->i_predict4x4[idx] = i_best;
+                    h->mb.cache.intra4x4_pred_mode[x264_scan8[idx]] = i_best;
+                }
                 if( i_cost > i_satd_thresh || idx == 15 )
                     break;
-                h->mb.cache.intra4x4_pred_mode[x264_scan8[idx]] = i_best;
             }
             else
             {
@@ -977,6 +1057,7 @@ static void mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_inter
         else
             a->i_satd_i4x4 = COST_MAX;
     }
+
 }
 
 static void intra_rd( x264_t *h, x264_mb_analysis_t *a, int i_satd_thresh )
@@ -1314,7 +1395,7 @@ static void mb_analyse_inter_p16x16( x264_t *h, x264_mb_analysis_t *a )
     }
 
     x264_macroblock_cache_ref( h, 0, 0, 4, 4, 0, a->l0.me16x16.i_ref );
-    assert( a->l0.me16x16.mv[1] <= h->mb.mv_max_spel[1] || h->i_thread_frames == 1 );
+    //assert( a->l0.me16x16.mv[1] <= h->mb.mv_max_spel[1] || h->i_thread_frames == 1 );
 
     h->mb.i_type = P_L0;
     if( a->i_mbrd )
@@ -2919,6 +3000,7 @@ void x264_macroblock_analyse( x264_t *h )
 {
     x264_mb_analysis_t analysis;
     int i_cost = COST_MAX;
+    long start_time;
 
     h->mb.i_qp = x264_ratecontrol_mb_qp( h );
     /* If the QP of this MB is within 1 of the previous MB, code the same QP as the previous MB,
@@ -2934,6 +3016,7 @@ void x264_macroblock_analyse( x264_t *h )
     if( h->sh.i_type == SLICE_TYPE_I )
     {
 intra_analysis:
+        start_time = MyGetTickCount();
         if( analysis.i_mbrd )
             mb_init_fenc_cache( h, analysis.i_mbrd >= 2 );
         mb_analyse_intra( h, &analysis, COST_MAX );
@@ -2949,6 +3032,9 @@ intra_analysis:
 
         else if( analysis.i_mbrd >= 2 )
             intra_rd_refine( h, &analysis );
+
+        long end_time = MyGetTickCount();
+        h->mb.intra_time_cost += end_time-start_time;
     }
     else if( h->sh.i_type == SLICE_TYPE_P )
     {

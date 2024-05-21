@@ -468,6 +468,17 @@ struct x264_t
         int     b_dct_decimate;
         int     i_psy_rd; /* Psy RD strength--fixed point value*/
         int     i_psy_trellis; /* Psy trellis strength--fixed point value*/
+        long    search_points;
+        long    me_time_cost; /* motion estimation time */
+        long    intra_time_cost; /* intra estimation time */
+
+        int     intra_analysis_count[12];
+        int     sum_mode;
+        int     target_mode1;
+        int     target_mode2;
+        int     target_mode3;
+        float   sth_min;
+        float   sth_max;
 
         int     b_interlaced;
         int     b_adaptive_mbaff; /* MBAFF+subme 0 requires non-adaptive MBAFF i.e. all field mbs */
@@ -802,6 +813,13 @@ static ALWAYS_INLINE int x264_predictor_clip( int16_t (*dst)[2], int16_t (*mvc)[
         cnt++;
     }
     return cnt;
+}
+
+static long MyGetTickCount(){
+  struct timeval tim;
+  gettimeofday(&tim, NULL);
+  long t = ((tim.tv_sec * 1000) + (tim.tv_usec / 1000)) & 0xffffffff;
+  return t;
 }
 
 #if ARCH_X86 || ARCH_X86_64

@@ -4506,6 +4506,21 @@ void    x264_encoder_close  ( x264_t *h )
         }
         else
             x264_log( h, X264_LOG_INFO, "kb/s:%.2f\n", f_bitrate );
+            x264_log( h, X264_LOG_INFO, "!!x264 exp!!  me time cost: %ld, intra time cost: %ld\n", \
+                                    h->mb.me_time_cost, h->mb.intra_time_cost);
+            // for(int i=0; i<9; i++){
+            //     h->mb.intra_analysis_count[9] += h->mb.intra_analysis_count[i];
+            // }
+            // x264_log( h, X264_LOG_INFO, "v,h,dc,ddl,ddr,vr,hd,vl,hu: %2.1f%%  %2.1f%%  %2.1f%%  %2.1f%%  %2.1f%%  %2.1f%%  %2.1f%%  %2.1f%%  %2.1f%%\n\n", 
+            //                                            h->mb.intra_analysis_count[0]*100.0/h->mb.intra_analysis_count[9], h->mb.intra_analysis_count[1]*100.0/h->mb.intra_analysis_count[9],
+            //                                            h->mb.intra_analysis_count[2]*100.0/h->mb.intra_analysis_count[9], h->mb.intra_analysis_count[3]*100.0/h->mb.intra_analysis_count[9],
+            //                                            h->mb.intra_analysis_count[4]*100.0/h->mb.intra_analysis_count[9], h->mb.intra_analysis_count[5]*100.0/h->mb.intra_analysis_count[9],
+            //                                            h->mb.intra_analysis_count[6]*100.0/h->mb.intra_analysis_count[9], h->mb.intra_analysis_count[7]*100.0/h->mb.intra_analysis_count[9],
+            //                                            h->mb.intra_analysis_count[8]*100.0/h->mb.intra_analysis_count[9]);
+
+            // x264_log( h, X264_LOG_INFO, "min:%.4f, max:%.4f\n", h->mb.sth_min,h->mb.sth_max);
+            // x264_log( h, X264_LOG_INFO, "%d  %d  %d  %d\n",  h->mb.target_mode1,h->mb.target_mode2,h->mb.target_mode3,h->mb.sum_mode);
+            x264_log( h, X264_LOG_INFO, "16 8 4:%2.1f%%, %2.1f%%, %2.1f%%\n", h->mb.target_mode1*100.0/h->mb.sum_mode, h->mb.target_mode2*100.0/h->mb.sum_mode, h->mb.target_mode3*100.0/h->mb.sum_mode );
     }
 
     /* rc */

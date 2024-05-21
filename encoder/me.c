@@ -181,6 +181,9 @@ do\
 
 void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, int *p_halfpel_thresh )
 {
+    long start_time = MyGetTickCount();
+    int offset_x, offset_y;
+    int hex_group[7];
     const int bw = x264_pixel_size[m->i_pixel].w;
     const int bh = x264_pixel_size[m->i_pixel].h;
     const int i_pixel = m->i_pixel;
@@ -317,56 +320,106 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
             COST_MV( 0, 0 );
     }
 
+static const uint8_t pixel_size_shift[7] = { 0, 1, 1, 2, 3, 3, 4 };
+#define SAD_THRESH(v) ( bcost < ( v >> pixel_size_shift[i_pixel] ) )
+
+#define CHECK_BMV(bmx,bmy) ( abs(bmx) < offset_x && abs(bmy) < offset_y )
+#define MY_POW2(a) ( a*a )
+#define CHECK_MODE(bmx,bmy,pmx,pmy,thresh) ( MY_POW2(bmx) + MY_POW2(bmy) + MY_POW2(pmx) + MY_POW2(pmy) > thresh )
+
+    static const uint8_t range_mul2[4][4] =
+                {
+                    { 1, 1, 2, 2 },
+                    { 1, 2, 2, 3 },
+                    { 2, 2, 3, 4 },
+                    { 2, 3, 4, 5 },
+                };
+    int sad_ctx2 = SAD_THRESH(1000) ? 0
+                : SAD_THRESH(2000) ? 1
+                : SAD_THRESH(4000) ? 2 : 3;
+    if(!sad_ctx2){
+        goto qpel_mv;
+    }
+    int x_range = (int)sqrt((MY_POW2(bmx) + MY_POW2(pmx))/2);
+    int y_range = (int)sqrt((MY_POW2(bmy) + MY_POW2(pmy))/2);
+    int x_ctx =   x_range < 5  ? 0
+                : x_range < 10 ? 1
+                : x_range < 20 ? 2 :3;
+    int y_ctx =   y_range < 5  ? 0
+                : y_range < 10 ? 1
+                : y_range < 20 ? 2 :3;
+    
+    offset_x = abs(bmx) + (i_me_range * range_mul2[x_ctx][sad_ctx2] >> 2);
+    offset_y = abs(bmx) + (i_me_range * range_mul2[y_ctx][sad_ctx2] >> 2);
+
+    h->mb.i_me_method = X264_ME_DIA;
+    if(CHECK_MODE(bmx,bmy,pmx, pmy, 8)){
+        h->mb.i_me_method = X264_ME_HEX;
+    }
+
     switch( h->mb.i_me_method )
     {
         case X264_ME_DIA:
         {
+            static const int8_t square3[4][2]={{-1,0}, {0,1}, {1,0}, {0,-1}};
             /* diamond search, radius 1 */
-            bcost <<= 4;
-            int i = i_me_range;
-            do
+            bcost <<= 3;
+            COST_MV_X4_DIR( square3[0][0], square3[0][1], 
+                            square3[1][0], square3[1][1], 
+                            square3[2][0], square3[2][1], 
+                            square3[3][0], square3[3][1], 
+                            costs );
+            COPY1_IF_LT( bcost, (costs[0]<<3)+1 );
+            COPY1_IF_LT( bcost, (costs[0]<<3)+2 );
+            COPY1_IF_LT( bcost, (costs[0]<<3)+3 );
+            COPY1_IF_LT( bcost, (costs[0]<<3)+4 );
+
+            if(!(bcost&7)){
+            // if(!(bcost&7) || SAD_THRESH(4500)){
+                bcost >>= 3;
+                break;
+            }
+            // for(int i = i_me_range-1 ; i > 0 && CHECK_MVRANGE(bmx, bmy); i--)
+            while ( CHECK_BMV(bmx, bmy) && CHECK_MVRANGE(bmx, bmy) )
             {
-                COST_MV_X4_DIR( 0,-1, 0,1, -1,0, 1,0, costs );
-                COPY1_IF_LT( bcost, (costs[0]<<4)+1 );
-                COPY1_IF_LT( bcost, (costs[1]<<4)+3 );
-                COPY1_IF_LT( bcost, (costs[2]<<4)+4 );
-                COPY1_IF_LT( bcost, (costs[3]<<4)+12 );
-                if( !(bcost&15) )
-                    break;
-                bmx -= (int32_t)((uint32_t)bcost<<28)>>30;
-                bmy -= (int32_t)((uint32_t)bcost<<30)>>30;
-                bcost &= ~15;
-            } while( --i && CHECK_MVRANGE(bmx, bmy) );
-            bcost >>= 4;
+                int dir = (bcost&7)-1;
+                bcost &= ~7;
+                bmx += square3[dir][0];
+                bmy += square3[dir][1];
+
+                COST_MV_X3_DIR( square3[(dir+3)%4][0], square3[(dir+3)%4][1],
+                                square3[   dir   ][0], square3[   dir   ][1],
+                                square3[(dir+1)%4][0], square3[(dir+1)%4][1],
+                                costs );
+                COPY1_IF_LT( bcost, (costs[0]<<3)+ (dir+3)%4+1 );
+                COPY1_IF_LT( bcost, (costs[1]<<3)+ (dir)%4+1 );
+                COPY1_IF_LT( bcost, (costs[2]<<3)+ (dir+1)%4+1 );
+
+                if( !(bcost&7))
+                // if( !(bcost&7) || SAD_THRESH(4500))
+                    break;                
+            }
+            bcost >>= 3;
             break;
+            
         }
 
         case X264_ME_HEX:
         {
+            static const int8_t square2[6][3][2] = {{{-1,-1}, {-1, 0}, {-1, 1}},
+                                                    {{-1, 0}, {-1, 1}, { 0, 1}},
+                                                    {{ 0, 1}, { 1, 1}, { 1, 0}},
+                                                    {{ 1, 1}, { 1, 0}, { 1,-1}},
+                                                    {{ 1, 0}, { 1,-1}, { 0,-1}},
+                                                    {{ 0,-1}, {-1,-1}, {-1, 0}}
+                                                   };
     me_hex2:
             /* hexagon search, radius 2 */
-    #if 0
-            for( int i = 0; i < i_me_range/2; i++ )
-            {
-                omx = bmx; omy = bmy;
-                COST_MV( omx-2, omy   );
-                COST_MV( omx-1, omy+2 );
-                COST_MV( omx+1, omy+2 );
-                COST_MV( omx+2, omy   );
-                COST_MV( omx+1, omy-2 );
-                COST_MV( omx-1, omy-2 );
-                if( bmx == omx && bmy == omy )
-                    break;
-                if( !CHECK_MVRANGE(bmx, bmy) )
-                    break;
-            }
-    #else
-            /* equivalent to the above, but eliminates duplicate candidates */
-
             /* hexagon */
             COST_MV_X3_DIR( -2,0, -1, 2,  1, 2, costs   );
             COST_MV_X3_DIR(  2,0,  1,-2, -1,-2, costs+4 ); /* +4 for 16-byte alignment */
             bcost <<= 3;
+            hex_group[6] = bcost;
             COPY1_IF_LT( bcost, (costs[0]<<3)+2 );
             COPY1_IF_LT( bcost, (costs[1]<<3)+3 );
             COPY1_IF_LT( bcost, (costs[2]<<3)+4 );
@@ -374,15 +427,29 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
             COPY1_IF_LT( bcost, (costs[5]<<3)+6 );
             COPY1_IF_LT( bcost, (costs[6]<<3)+7 );
 
-            if( bcost&7 )
+            hex_group[0] = costs[0];
+            hex_group[1] = costs[1];
+            hex_group[2] = costs[2];
+            hex_group[3] = costs[4];
+            hex_group[4] = costs[5];
+            hex_group[5] = costs[6];
+
+            if( (bcost&7) )
+            // if( (bcost&7) && (!SAD_THRESH(12000)) )
             {
                 int dir = (bcost&7)-2;
                 bmx += hex2[dir+1][0];
                 bmy += hex2[dir+1][1];
 
                 /* half hexagon, not overlapping the previous iteration */
-                for( int i = (i_me_range>>1) - 1; i > 0 && CHECK_MVRANGE(bmx, bmy); i-- )
+                // for( int i = (i_me_range>>1) - 1; i > 0 && CHECK_MVRANGE(bmx, bmy); i-- )
+                while ( CHECK_BMV(bmx, bmy) && CHECK_MVRANGE(bmx, bmy) )
                 {
+                    hex_group[(dir+2)%6] = hex_group[(dir+1)%6];
+                    hex_group[(dir+3)%6] = hex_group[6];
+                    hex_group[(dir+4)%6] = hex_group[(dir+5)%6];
+                    hex_group[6] = hex_group[dir];
+
                     COST_MV_X3_DIR( hex2[dir+0][0], hex2[dir+0][1],
                                     hex2[dir+1][0], hex2[dir+1][1],
                                     hex2[dir+2][0], hex2[dir+2][1],
@@ -391,31 +458,44 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
                     COPY1_IF_LT( bcost, (costs[0]<<3)+1 );
                     COPY1_IF_LT( bcost, (costs[1]<<3)+2 );
                     COPY1_IF_LT( bcost, (costs[2]<<3)+3 );
-                    if( !(bcost&7) )
+
+                    hex_group[(dir+5+ 0)%6] = costs[0];
+                    hex_group[(dir+5+ 1)%6] = costs[1];
+                    hex_group[(dir+5+ 2)%6] = costs[2];
+
+                    if( !(bcost&7) ){
+                    // if( !(bcost&7) || SAD_THRESH(12000) ){
                         break;
+                    }
+                        
                     dir += (bcost&7)-2;
                     dir = mod6m1[dir+1];
                     bmx += hex2[dir+1][0];
                     bmy += hex2[dir+1][1];
                 }
             }
-            bcost >>= 3;
-    #endif
             /* square refine */
-            bcost <<= 4;
-            COST_MV_X4_DIR(  0,-1,  0,1, -1,0, 1,0, costs );
+            bcost &= ~7;
+            int tmp = 0;
+            for(int i=1; i<6; i++){
+                if(hex_group[i] < hex_group[tmp]) tmp = i;
+            }
+            COST_MV_X3_DIR(square2[tmp][0][0], square2[tmp][0][1],
+                           square2[tmp][1][0], square2[tmp][1][1],
+                           square2[tmp][2][0], square2[tmp][2][1],
+                           costs);
             COPY1_IF_LT( bcost, (costs[0]<<4)+1 );
             COPY1_IF_LT( bcost, (costs[1]<<4)+2 );
             COPY1_IF_LT( bcost, (costs[2]<<4)+3 );
-            COPY1_IF_LT( bcost, (costs[3]<<4)+4 );
-            COST_MV_X4_DIR( -1,-1, -1,1, 1,-1, 1,1, costs );
-            COPY1_IF_LT( bcost, (costs[0]<<4)+5 );
-            COPY1_IF_LT( bcost, (costs[1]<<4)+6 );
-            COPY1_IF_LT( bcost, (costs[2]<<4)+7 );
-            COPY1_IF_LT( bcost, (costs[3]<<4)+8 );
-            bmx += square1[bcost&15][0];
-            bmy += square1[bcost&15][1];
-            bcost >>= 4;
+
+            if(!(bcost&7)) {
+                bcost >>= 3;
+                break;
+            }
+            bmx += square2[tmp][(bcost&15)-1][0];
+            bmy += square2[tmp][(bcost&15)-1][1];
+            bcost >>= 3;
+
             break;
         }
 
@@ -423,37 +503,33 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
         {
             /* Uneven-cross Multi-Hexagon-grid Search
              * as in JM, except with different early termination */
-
-            static const uint8_t pixel_size_shift[7] = { 0, 1, 1, 2, 3, 3, 4 };
-
             int ucost1, ucost2;
             int cross_start = 1;
 
             /* refine predictors */
             ucost1 = bcost;
-            DIA1_ITER( pmx, pmy );
+            DIA1_ITER( pmx, pmy ); //首先对(pmx,pmy)做小钻石搜索
             if( pmx | pmy )
-                DIA1_ITER( 0, 0 );
+                DIA1_ITER( 0, 0 ); //若(pmx,pmy)不在(0,0)，则对(0,0)做小钻石搜索
 
             if( i_pixel == PIXEL_4x4 )
                 goto me_hex2;
 
             ucost2 = bcost;
-            if( (bmx | bmy) && ((bmx-pmx) | (bmy-pmy)) )
+            if( (bmx | bmy) && ((bmx-pmx) | (bmy-pmy)) ) //若 (bmx,bmy)不在(0,0) 且 (bmx,bmy)不与(pmx,pmy)重合，则对(bmx,bmy)做小钻石搜索
                 DIA1_ITER( bmx, bmy );
             if( bcost == ucost2 )
                 cross_start = 3;
             omx = bmx; omy = bmy;
 
             /* early termination */
-#define SAD_THRESH(v) ( bcost < ( v >> pixel_size_shift[i_pixel] ) )
-            if( bcost == ucost2 && SAD_THRESH(2000) )
+            if( bcost == ucost2 && SAD_THRESH(2000) ) //若当前最佳点在(pmx,pmy)或(0,0)附近，则对该点做大钻石搜索
             {
                 COST_MV_X4( 0,-2, -1,-1, 1,-1, -2,0 );
                 COST_MV_X4( 2, 0, -1, 1, 1, 1,  0,2 );
-                if( bcost == ucost1 && SAD_THRESH(500) )
+                if( bcost == ucost1 && SAD_THRESH(500) ) //若经过上述搜索后最佳点仍在起始点，则退出
                     break;
-                if( bcost == ucost2 )
+                if( bcost == ucost2 )  //若经过上述搜索后最佳点在(pmx,pmy)或(0,0)附近，则对该点做十字搜索
                 {
                     int range = (i_me_range>>1) | 1;
                     CROSS( 3, range, range );
@@ -771,6 +847,8 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
         break;
     }
 
+qpel_mv:
+    offset_x++;
     /* -> qpel mv */
     uint32_t bmv = pack16to32_mask(bmx,bmy);
     uint32_t bmv_spel = SPELx2(bmv);
@@ -795,6 +873,9 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
         int qpel = subpel_iterations[h->mb.i_subpel_refine][3];
         refine_subpel( h, m, hpel, qpel, p_halfpel_thresh, 0 );
     }
+
+    long end_time = MyGetTickCount();
+    h->mb.me_time_cost += (end_time - start_time);
 }
 #undef COST_MV
 
