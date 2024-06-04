@@ -1,5 +1,5 @@
 # 安装教程
-1. 下载源码：`git clone git@github.com:thenotoriousean/x264_exp.git`
+1. 下载源码：`git clone https://github.com/thenotoriousean/x264_exp.git`
 2. 安装nasm，官网地址https://www.nasm.us/pub/nasm/releasebuilds/：
 `./configure`
 `make && make install`
